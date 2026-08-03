@@ -9,22 +9,45 @@ on:
 permissions:
   contents: read
 
+env:
+  EXPECTED_SIGNING_SHA256: 8B:F2:5A:D7:4C:47:54:72:17:A2:F3:61:4B:E4:F6:60:B6:00:4A:38:28:28:47:01:A5:21:D3:95:27:F2:A0:18
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Build stable-signed APKs
+        run: gradle :app:assembleDebug :app:assembleRelease --stacktrace
+
+      - name: Verify permanent signing certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p signing-reports
+          for apk in \
+            app/build/outputs/apk/debug/app-debug.apk \
+            app/build/outputs/apk/release/app-release.apk; do
+            report="signing-reports/$(basename "$apk").txt"
+            keytool -printcert -jarfile "$apk" | tee "$report"
+            grep -F "SHA256: $EXPECTED_SIGNING_SHA256" "$report"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
-          name: ADB-Over-TCP-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ADB-Over-TCP-stable-signed
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
+            signing-reports/*.txt
           if-no-files-found: error

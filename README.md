@@ -65,10 +65,26 @@ The tested Motorola Android 15 build blocks writing `persist.adb.tcp.port`, so t
 
 The optional boot scan still checks readable OEM init rules for device-specific persistence mechanisms.
 
+## Permanent repository signing key
+
+Starting with version **0.3.2**, every debug and release APK built from this repository uses the same permanent development signing certificate.
+
+**SHA-256 certificate fingerprint:**
+
+```text
+8B:F2:5A:D7:4C:47:54:72:17:A2:F3:61:4B:E4:F6:60:B6:00:4A:38:28:28:47:01:A5:21:D3:95:27:F2:A0:18
+```
+
+GitHub Actions verifies the certificate on both APK variants and fails the workflow if the fingerprint changes. This means future APKs can update one another without uninstalling, provided they are version 0.3.2 or later.
+
+The key is intentionally a **public development key** because this repository is public. It guarantees update compatibility but must not be used as a private Play Store or security-sensitive production signing identity.
+
+Because versions through 0.3.1 were signed by GitHub runner debug keys, installing 0.3.2 may require one final uninstall of the older app. After 0.3.2 is installed, subsequent builds will retain the same signing identity.
+
 ## Build
 
 The project uses Gradle 8.11.1, Android Gradle Plugin 8.9.3, Kotlin 2.1.0, compile/target SDK 35, and Java 17.
 
 ```bash
-gradle :app:assembleDebug
+gradle :app:assembleDebug :app:assembleRelease
 ```
