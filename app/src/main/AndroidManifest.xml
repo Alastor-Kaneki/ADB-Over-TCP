@@ -39,6 +39,15 @@
         </activity>
 
         <service
+            android:name=".AdbHostService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the app-bundled ADB host server and local transport alive" />
+        </service>
+
+        <service
             android:name=".PairingService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
