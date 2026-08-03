@@ -63,8 +63,7 @@ class AdbController(private val context: Context) {
 
         append(log, "PAIR", run("pair", cleanAddress, code))
         if (!log.toString().contains("Successfully paired", ignoreCase = true)) {
-            val last = run("devices")
-            append(log, "DEVICES", last)
+            append(log, "DEVICES", run("devices"))
         }
 
         val connected = run("connect", connectionAddress)
@@ -106,14 +105,92 @@ class AdbController(private val context: Context) {
         }.trim()
     }
 
-    fun testPersistentPort(): String {
+    /**
+     * Tests only boot-recovery mechanisms that can be verified from the shell identity.
+     * A live socket and an authenticated shell are the source of truth; Motorola may expose
+     * blank ADB properties even while classic TCP ADB is active.
+     */
+    fun bootCompatibilityScan(): String {
         val serial = "127.0.0.1:5555"
-        val before = run("-s", serial, "shell", "getprop", "persist.adb.tcp.port")
-        val attempt = run("-s", serial, "shell", "setprop", "persist.adb.tcp.port", "5555")
-        val after = run("-s", serial, "shell", "getprop", "persist.adb.tcp.port")
-        val service = run("-s", serial, "shell", "getprop", "service.adb.tcp.port")
-        return "BEFORE\n$before\n\nSET ATTEMPT\n$attempt\n\nAFTER\n$after\n\nACTIVE SERVICE PORT\n$service"
+        val socketListening = isLoopbackListening(1_500)
+        val connect = if (socketListening) run("connect", serial) else Result(1, "Port 5555 is closed")
+        val identity = if (socketListening) run("-s", serial, "shell", "id") else Result(1, "Unavailable")
+        val manufacturer = shellGetProp(serial, "ro.product.manufacturer")
+        val fingerprint = shellGetProp(serial, "ro.build.fingerprint")
+        val enforcing = run("-s", serial, "shell", "getenforce")
+        val usbConfig = shellGetProp(serial, "persist.sys.usb.config")
+
+        val persistBefore = shellGetProp(serial, "persist.adb.tcp.port")
+        val persistAttempt = run(
+            "-s", serial, "shell", "setprop", "persist.adb.tcp.port", "5555"
+        )
+        val persistAfter = shellGetProp(serial, "persist.adb.tcp.port")
+        val servicePort = shellGetProp(serial, "service.adb.tcp.port")
+
+        val persistWritable = persistAttempt.ok && persistAfter.output.trim() == "5555"
+        context.getSharedPreferences("adb_tcp", Context.MODE_PRIVATE).edit()
+            .putBoolean("persistent_port_supported", persistWritable)
+            .putBoolean("property_status_reliable", servicePort.output.trim() == "5555")
+            .apply()
+
+        val initScanCommand = """
+            for d in /system/etc/init /system_ext/etc/init /product/etc/init /vendor/etc/init /odm/etc/init; do
+              if [ -d "${'$'}d" ]; then
+                grep -RniE 'persist\\.adb\\.tcp\\.port|service\\.adb\\.tcp\\.port|adb[^ ]*tcp|tcp[^ ]*adb|start adbd|restart adbd' "${'$'}d" 2>/dev/null
+              fi
+            done | head -n 160
+        """.trimIndent()
+        val initMatches = run(
+            "-s", serial, "shell", "sh", "-c", initScanCommand,
+            timeoutSeconds = 25
+        )
+        val oemTriggerFound = initMatches.ok && initMatches.output.isNotBlank()
+        context.getSharedPreferences("adb_tcp", Context.MODE_PRIVATE).edit()
+            .putBoolean("oem_adb_trigger_found", oemTriggerFound)
+            .putString("last_boot_compatibility_scan", initMatches.output.take(24_000))
+            .apply()
+
+        return buildString {
+            appendLine("BOOT COMPATIBILITY RESULT")
+            appendLine()
+            appendLine("Current-session loopback: ${if (socketListening && identity.ok) "WORKING" else "NOT WORKING"}")
+            appendLine("Persistent TCP property: ${if (persistWritable) "WRITABLE" else "BLOCKED"}")
+            appendLine("Property-based status: ${if (servicePort.output.trim() == "5555") "AVAILABLE" else "UNRELIABLE / BLANK"}")
+            appendLine("OEM init trigger candidates: ${if (oemTriggerFound) "FOUND—REVIEW BELOW" else "NONE FOUND IN READABLE FILES"}")
+            appendLine()
+            appendLine("CONCLUSION")
+            if (persistWritable) {
+                appendLine("This device may preserve TCP ADB across reboot. Reboot testing is still required.")
+            } else if (oemTriggerFound) {
+                appendLine("The standard persistent-property route is blocked. An OEM-specific init trigger may still be testable.")
+            } else {
+                appendLine("Cold-boot restart is not currently available without root, USB ADB, or temporary Wi-Fi pairing. Same-boot mobile-data operation remains supported.")
+            }
+            appendLine()
+            appendLine("DEVICE")
+            appendLine("Manufacturer: ${manufacturer.output.ifBlank { "unknown" }}")
+            appendLine("Build: ${fingerprint.output.ifBlank { "unknown" }}")
+            appendLine("SELinux: ${enforcing.output.ifBlank { "unknown" }}")
+            appendLine("USB config: ${usbConfig.output.ifBlank { "blank" }}")
+            appendLine()
+            appendLine("SOCKET / AUTH")
+            appendLine("Socket probe: $socketListening")
+            appendLine("Connect:\n$connect")
+            appendLine("Identity:\n$identity")
+            appendLine()
+            appendLine("PERSISTENT PROPERTY")
+            appendLine("Before:\n$persistBefore")
+            appendLine("Set attempt:\n$persistAttempt")
+            appendLine("After:\n$persistAfter")
+            appendLine("Active service property:\n$servicePort")
+            appendLine()
+            appendLine("READABLE INIT MATCHES")
+            appendLine(if (initMatches.output.isBlank()) "No matching readable init entries." else initMatches.output)
+        }.trim()
     }
+
+    private fun shellGetProp(serial: String, name: String): Result =
+        run("-s", serial, "shell", "getprop", name)
 
     private fun append(log: StringBuilder, title: String, result: Result) {
         log.append("[$title]\n$result\n\n")
