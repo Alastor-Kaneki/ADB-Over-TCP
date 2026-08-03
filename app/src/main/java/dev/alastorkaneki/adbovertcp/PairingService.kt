@@ -41,7 +41,22 @@ class PairingService : Service() {
                 intent.getStringExtra(EXTRA_PAIRING_CODE).orEmpty()
             )
             ACTION_CANCEL -> stopPairing()
-            else -> startPairingDiscovery()
+            else -> {
+                val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+                val startShizuku = intent?.getBooleanExtra(
+                    EXTRA_START_SHIZUKU,
+                    prefs.getBoolean(PREF_START_SHIZUKU, true)
+                ) ?: prefs.getBoolean(PREF_START_SHIZUKU, true)
+                val forgetAfterSetup = intent?.getBooleanExtra(
+                    EXTRA_FORGET_AFTER_SETUP,
+                    prefs.getBoolean(PREF_FORGET_AFTER_SETUP, false)
+                ) ?: prefs.getBoolean(PREF_FORGET_AFTER_SETUP, false)
+                prefs.edit()
+                    .putBoolean(PREF_RUN_START_SHIZUKU, startShizuku)
+                    .putBoolean(PREF_RUN_FORGET_AFTER_SETUP, forgetAfterSetup)
+                    .apply()
+                startPairingDiscovery()
+            }
         }
         return START_NOT_STICKY
     }
@@ -112,32 +127,63 @@ class PairingService : Service() {
                 }
             saveEndpoint(PREF_CONNECTION_ENDPOINT, connectionEndpoint.address)
 
-            val startShizuku = getSharedPreferences(PREFS, MODE_PRIVATE)
-                .getBoolean(PREF_START_SHIZUKU, true)
+            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+            val startShizuku = prefs.getBoolean(
+                PREF_RUN_START_SHIZUKU,
+                prefs.getBoolean(PREF_START_SHIZUKU, true)
+            )
+            val forgetAfterSetup = prefs.getBoolean(
+                PREF_RUN_FORGET_AFTER_SETUP,
+                prefs.getBoolean(PREF_FORGET_AFTER_SETUP, false)
+            )
             val result = controller.enableTcpFromEndpoint(
                 connectionEndpoint.address,
                 startShizuku
             )
             publishResult(result)
 
-            // A raw socket probe is insufficient: the embedded adb server can restart and forget
-            // the transport. Require adb connect + get-state to succeed before reporting success.
             val finalTransport = controller.ensureLoopbackConnected(attempts = 8, delayMs = 500)
-            if (finalTransport.ok) {
-                val message = if (startShizuku) {
-                    "TCP 5555 is active and authenticated through loopback. Shizuku startup was attempted. Wi-Fi may now be disconnected."
-                } else {
-                    "TCP 5555 is active and authenticated through loopback. Wi-Fi may now be disconnected."
-                }
-                publishResult("$result\n\n[FINAL TRANSPORT]\n$finalTransport")
-                updateNotification(message, codeInput = false, ongoing = false)
-                stopForeground(STOP_FOREGROUND_DETACH)
-                stopSelf()
-            } else {
+            if (!finalTransport.ok) {
                 finishWithError(
                     "Pairing completed, but embedded ADB could not authenticate 127.0.0.1:5555.\n\n$finalTransport\n\n$result"
                 )
+                return@launch
             }
+
+            if (forgetAfterSetup) {
+                updateNotification(
+                    "TCP setup finished. Removing this app from paired devices…",
+                    codeInput = false,
+                    ongoing = true
+                )
+                val forgetResult = controller.forgetOwnPairing()
+                val combined = "$result\n\n[FINAL TRANSPORT]\n$finalTransport\n\n[SELF UNPAIR]\n$forgetResult"
+                publishResult(combined)
+                if (forgetResult.ok) {
+                    updateNotification(
+                        "Setup finished and this app's ADB key was removed. Shizuku can continue, but the app must pair again for future ADB commands.",
+                        codeInput = false,
+                        ongoing = false
+                    )
+                    stopForeground(STOP_FOREGROUND_DETACH)
+                    stopSelf()
+                } else {
+                    finishWithError(
+                        "TCP setup succeeded, but removing this app from paired devices failed.\n\n$combined"
+                    )
+                }
+                return@launch
+            }
+
+            val message = if (startShizuku) {
+                "TCP 5555 is active and authenticated through loopback. Shizuku startup was attempted. Wi-Fi may now be disconnected."
+            } else {
+                "TCP 5555 is active and authenticated through loopback. Wi-Fi may now be disconnected."
+            }
+            publishResult("$result\n\n[FINAL TRANSPORT]\n$finalTransport")
+            updateNotification(message, codeInput = false, ongoing = false)
+            stopForeground(STOP_FOREGROUND_DETACH)
+            stopSelf()
         }
     }
 
@@ -265,21 +311,34 @@ class PairingService : Service() {
         const val ACTION_SUBMIT_CODE = "dev.alastorkaneki.adbovertcp.action.SUBMIT_CODE"
         const val ACTION_CANCEL = "dev.alastorkaneki.adbovertcp.action.CANCEL_PAIRING"
         const val EXTRA_PAIRING_CODE = "pairing_code"
+        const val EXTRA_START_SHIZUKU = "start_shizuku_extra"
+        const val EXTRA_FORGET_AFTER_SETUP = "forget_after_setup_extra"
         const val REMOTE_INPUT_CODE = "remote_pairing_code"
 
         const val PREFS = "adb_tcp"
         const val PREF_LAST_RESULT = "last_pairing_result"
         const val PREF_START_SHIZUKU = "start_shizuku"
+        const val PREF_FORGET_AFTER_SETUP = "forget_after_setup"
+        private const val PREF_RUN_START_SHIZUKU = "run_start_shizuku"
+        private const val PREF_RUN_FORGET_AFTER_SETUP = "run_forget_after_setup"
         private const val PREF_PAIRING_ENDPOINT = "auto_pairing_endpoint"
         private const val PREF_CONNECTION_ENDPOINT = "auto_connection_endpoint"
 
         private const val CHANNEL_ID = "adb_pairing"
         private const val NOTIFICATION_ID = 5556
 
-        fun start(context: Context) {
+        fun start(
+            context: Context,
+            startShizuku: Boolean? = null,
+            forgetAfterSetup: Boolean? = null
+        ) {
             androidx.core.content.ContextCompat.startForegroundService(
                 context,
-                Intent(context, PairingService::class.java).setAction(ACTION_START)
+                Intent(context, PairingService::class.java).apply {
+                    action = ACTION_START
+                    startShizuku?.let { putExtra(EXTRA_START_SHIZUKU, it) }
+                    forgetAfterSetup?.let { putExtra(EXTRA_FORGET_AFTER_SETUP, it) }
+                }
             )
         }
 
