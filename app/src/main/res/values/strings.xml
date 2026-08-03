@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">ADB Over TCP</string>
+    <string name="notification_channel_name">ADB overlay</string>
+    <string name="notification_channel_description">Keeps the local ADB control overlay available.</string>
+</resources>
