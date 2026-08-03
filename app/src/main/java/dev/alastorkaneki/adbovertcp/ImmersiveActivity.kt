@@ -1,37 +1,45 @@
 package dev.alastorkaneki.adbovertcp
 
-import android.os.Bundle
-import androidx.appcompat.app.AppCompatActivity
+import android.app.Activity
+import android.view.ViewTreeObserver
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.util.WeakHashMap
 
-/**
- * Base activity that keeps the app in sticky immersive mode.
- * System bars can be revealed temporarily with an edge swipe and are hidden again automatically.
- */
-abstract class ImmersiveActivity : AppCompatActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        super.onCreate(savedInstanceState)
-        hideSystemBars()
+/** Applies sticky immersive mode to every activity in the application. */
+object ImmersiveMode {
+    private val focusListeners =
+        WeakHashMap<Activity, ViewTreeObserver.OnWindowFocusChangeListener>()
+
+    fun install(activity: Activity) {
+        WindowCompat.setDecorFitsSystemWindows(activity.window, false)
+
+        if (!focusListeners.containsKey(activity)) {
+            val listener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+                if (hasFocus) {
+                    activity.window.decorView.post { hide(activity) }
+                }
+            }
+            focusListeners[activity] = listener
+            activity.window.decorView.viewTreeObserver
+                .addOnWindowFocusChangeListener(listener)
+        }
+
+        hide(activity)
     }
 
-    override fun onResume() {
-        super.onResume()
-        hideSystemBars()
-    }
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
-    }
-
-    protected fun hideSystemBars() {
-        WindowCompat.getInsetsController(window, window.decorView).apply {
+    fun hide(activity: Activity) {
+        WindowCompat.getInsetsController(activity.window, activity.window.decorView).apply {
             systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            hide(WindowInsetsCompat.Type.systemBars())
+            hide(WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars())
         }
+    }
+
+    fun uninstall(activity: Activity) {
+        val listener = focusListeners.remove(activity) ?: return
+        val observer = activity.window.decorView.viewTreeObserver
+        if (observer.isAlive) observer.removeOnWindowFocusChangeListener(listener)
     }
 }
