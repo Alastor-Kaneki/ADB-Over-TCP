@@ -2,6 +2,7 @@ package dev.alastorkaneki.adbovertcp
 
 import android.app.Activity
 import android.app.Application
+import android.app.Application.ActivityLifecycleCallbacks
 import android.os.Bundle
 import com.google.android.material.color.DynamicColors
 
