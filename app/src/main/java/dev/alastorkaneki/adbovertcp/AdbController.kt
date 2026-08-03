@@ -46,35 +46,77 @@ class AdbController(private val context: Context) {
                 process.destroyForcibly()
                 Result(124, "Command timed out: adb ${args.joinToString(" ")}")
             } else {
-                Result(process.exitValue(), process.inputStream.bufferedReader().use { it.readText() }.trim())
+                Result(
+                    process.exitValue(),
+                    process.inputStream.bufferedReader().use { it.readText() }.trim()
+                )
             }
         }.getOrElse { Result(126, it.stackTraceToString()) }
+    }
+
+    fun pair(pairingAddress: String, code: String): Result {
+        require(code.matches(Regex("\\d{6}"))) { "Pairing code must contain six digits" }
+        return run("pair", pairingAddress.trim(), code)
+    }
+
+    suspend fun enableTcpFromEndpoint(
+        connectionAddress: String,
+        startShizuku: Boolean
+    ): String {
+        val log = StringBuilder()
+        val connected = run("connect", connectionAddress)
+        append(log, "CONNECT $connectionAddress", connected)
+        if (!connected.ok && !connected.output.contains("connected", ignoreCase = true)) {
+            return log.toString()
+        }
+
+        val tcp = run("-s", connectionAddress, "tcpip", "5555")
+        append(log, "TCPIP 5555", tcp)
+        if (!tcp.ok && !tcp.output.contains("restarting", ignoreCase = true)) {
+            return log.toString()
+        }
+
+        delay(2_000)
+        append(log, "LOOPBACK CONNECT", run("connect", "127.0.0.1:5555"))
+        val verify = run("-s", "127.0.0.1:5555", "shell", "id")
+        append(log, "LOOPBACK VERIFY", verify)
+
+        if (startShizuku && verify.ok) {
+            append(log, "SHIZUKU", startShizuku())
+        }
+        return log.toString().trim()
     }
 
     suspend fun pairAndEnable(pairAddress: String, code: String, connectionPort: Int): String {
         val cleanAddress = pairAddress.trim()
         require(cleanAddress.contains(':')) { "Pairing address must be IP:port" }
-        require(code.matches(Regex("\\d{6}"))) { "Pairing code must contain six digits" }
         require(connectionPort in 1..65535) { "Connection port is invalid" }
 
         val host = extractHost(cleanAddress)
         val connectionAddress = formatAddress(host, connectionPort)
         val log = StringBuilder()
+        append(log, "PAIR", pair(cleanAddress, code))
+        log.append(enableTcpFromEndpoint(connectionAddress, startShizuku = false))
+        return log.toString()
+    }
 
-        append(log, "PAIR", run("pair", cleanAddress, code))
-        if (!log.toString().contains("Successfully paired", ignoreCase = true)) {
-            append(log, "DEVICES", run("devices"))
+    fun startShizuku(): Result {
+        val serial = "127.0.0.1:5555"
+        val packageCheck = run(
+            "-s", serial, "shell", "pm", "path", SHIZUKU_PACKAGE
+        )
+        if (!packageCheck.ok || !packageCheck.output.contains("package:")) {
+            return Result(1, "Shizuku is not installed or its package is unavailable.\n$packageCheck")
         }
 
-        val connected = run("connect", connectionAddress)
-        append(log, "CONNECT", connected)
-        if (!connected.ok && !connected.output.contains("connected", ignoreCase = true)) return log.toString()
-
-        append(log, "TCPIP", run("-s", connectionAddress, "tcpip", "5555"))
-        delay(2_000)
-        append(log, "LOOPBACK", run("connect", "127.0.0.1:5555"))
-        append(log, "VERIFY", run("-s", "127.0.0.1:5555", "shell", "id"))
-        return log.toString()
+        return run(
+            "-s",
+            serial,
+            "shell",
+            "sh",
+            "/sdcard/Android/data/$SHIZUKU_PACKAGE/start.sh",
+            timeoutSeconds = 60
+        )
     }
 
     fun reconnect(): String = buildString {
@@ -99,17 +141,14 @@ class AdbController(private val context: Context) {
         )
         return buildString {
             commands.forEach { command ->
-                val result = run("-s", "127.0.0.1:5555", "shell", *command.toTypedArray())
+                val result = run(
+                    "-s", "127.0.0.1:5555", "shell", *command.toTypedArray()
+                )
                 append("$ ${command.joinToString(" ")}\n$result\n\n")
             }
         }.trim()
     }
 
-    /**
-     * Tests only boot-recovery mechanisms that can be verified from the shell identity.
-     * A live socket and an authenticated shell are the source of truth; Motorola may expose
-     * blank ADB properties even while classic TCP ADB is active.
-     */
     fun bootCompatibilityScan(): String {
         val serial = "127.0.0.1:5555"
         val socketListening = isLoopbackListening(1_500)
@@ -164,7 +203,7 @@ class AdbController(private val context: Context) {
             } else if (oemTriggerFound) {
                 appendLine("The standard persistent-property route is blocked. An OEM-specific init trigger may still be testable.")
             } else {
-                appendLine("Cold-boot restart is not currently available without root, USB ADB, or temporary Wi-Fi pairing. Same-boot mobile-data operation remains supported.")
+                appendLine("Cold-boot restart is not currently available. Automatic same-boot pairing and mobile-data operation remain supported.")
             }
             appendLine()
             appendLine("DEVICE")
@@ -203,4 +242,8 @@ class AdbController(private val context: Context) {
 
     private fun formatAddress(host: String, port: Int): String =
         if (host.contains(':')) "[$host]:$port" else "$host:$port"
+
+    companion object {
+        const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
+    }
 }

@@ -1,34 +1,47 @@
 # ADB Over TCP
 
-A standalone Android 15 utility that bootstraps classic ADB-over-TCP from Android Wireless Debugging, then reconnects locally through `127.0.0.1:5555` so Wi-Fi can be turned off while mobile data remains active.
+A standalone Android 15 utility that bundles its own ADB executable, pairs through Android Wireless Debugging, switches `adbd` to classic TCP 5555, and reconnects locally through `127.0.0.1:5555`.
 
-## Current flow
+## Automatic pairing flow
 
-1. Open Android Wireless Debugging settings from the app.
-2. Enter the pairing `IP:port` and six-digit code.
-3. Enter the separate connection port shown on the main Wireless Debugging screen.
-4. The bundled ADB executable runs `pair`, `connect`, `tcpip 5555`, then reconnects through loopback.
-5. Use the optional overlay for reconnect, Safe Off, Full Off, settings, and status.
-6. The boot receiver probes `127.0.0.1:5555` and attempts recovery when the OEM preserved the listener.
+1. Tap **Start Automatic Pairing**.
+2. The app opens Android's Wireless Debugging settings and starts mDNS discovery for `_adb-tls-pairing._tcp`.
+3. Enable Wireless Debugging and tap **Pair device with pairing code**.
+4. The app detects the pairing IP and randomized port automatically.
+5. Enter only the six-digit code through the notification's inline reply, or use the in-app fallback field.
+6. The app pairs its built-in ADB client, discovers `_adb-tls-connect._tcp`, connects, requests `tcpip 5555`, and reconnects through `127.0.0.1:5555`.
+7. Optionally, the app starts Shizuku using its official on-device ADB startup script.
+8. Wi-Fi may then be disconnected while loopback ADB and Shizuku continue for the current boot session.
+
+No pairing IP, pairing port, or connection port needs to be typed manually.
+
+## Built-in ADB
+
+Development builds package LADB's native ADB executable for arm64-v8a and armeabi-v7a inside the APK. Termux, an external `adb` binary, and Shizuku are not required for the pairing/TCP conversion itself.
+
+The embedded component's license is retained in `app/src/main/assets/LADB_LICENSE.txt`. Do not publish unofficial builds containing it to Google Play.
+
+## Shizuku integration
+
+When enabled, the app runs the startup command documented by Shizuku after loopback ADB is verified:
+
+```sh
+adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh
+```
+
+Shizuku client apps can then use the running Shizuku service without requiring Wi-Fi to stay connected. Shizuku still stops after a full reboot on a stock non-root device and must be started again.
 
 ## Start/stop meanings
 
-- **Reconnect:** connects to the existing internal listener.
-- **Safe Off:** disconnects the app but leaves TCP 5555 available so it can reconnect on mobile data.
-- **Full Off:** sends `adb usb`, which shuts down TCP. Re-enabling it then requires Wireless Debugging/USB or a successful OEM boot-persistence method.
+- **Reconnect:** connects the bundled ADB client to the existing loopback listener.
+- **Safe Off:** disconnects this app but leaves TCP 5555 available for reconnection.
+- **Full Off:** sends `adb usb`, shutting down TCP. Automatic pairing must be run again to restore it.
 
-## Boot compatibility scan
+## Boot behavior
 
-The app treats an actual socket and authenticated ADB shell on `127.0.0.1:5555` as the source of truth. Some Motorola Android 15 builds return blank values for `service.adb.tcp.port` even while classic TCP ADB is active.
+The tested Motorola Android 15 build blocks writing `persist.adb.tcp.port`, so the app does not depend on persistent TCP. The main supported workflow is automatic pairing once per boot whenever Wi-Fi is available, followed by same-boot operation over loopback/mobile data.
 
-The scan checks:
-
-- whether loopback TCP 5555 is listening and authenticated;
-- whether `persist.adb.tcp.port` can be written;
-- whether property-based status is usable;
-- readable system, product, vendor, ODM, and system-ext init files for ADB/TCP boot triggers.
-
-On the tested Motorola build, writing `persist.adb.tcp.port` as shell is blocked by SELinux/property policy. Same-boot operation over mobile data remains supported; cold-boot recovery still requires a discovered OEM trigger, root, USB ADB, or temporary Wi-Fi pairing.
+The optional boot scan still checks readable OEM init rules for device-specific persistence mechanisms.
 
 ## Build
 
@@ -37,11 +50,3 @@ The project uses Gradle 8.11.1, Android Gradle Plugin 8.9.3, Kotlin 2.1.0, compi
 ```bash
 gradle :app:assembleDebug
 ```
-
-The build downloads LADB's native `libadb.so` for arm64-v8a and armeabi-v7a. Its license is retained in `app/src/main/assets/LADB_LICENSE.txt`.
-
-## Important limitations
-
-- This does not bypass Android's Wi-Fi requirement for the official Wireless Debugging toggle. It converts an authorized session into classic ADB TCP and then uses loopback.
-- A stock non-root device may clear TCP ADB after reboot. The app tests persistence, but cannot guarantee cold-boot bootstrap on every OEM Android 15 build.
-- Do not publish unofficial builds containing LADB's native component to Google Play.

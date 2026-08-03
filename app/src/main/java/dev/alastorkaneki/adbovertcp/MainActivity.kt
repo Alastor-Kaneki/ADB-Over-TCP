@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,9 +22,9 @@ import kotlinx.coroutines.withContext
 class MainActivity : AppCompatActivity() {
     private lateinit var controller: AdbController
     private lateinit var output: TextView
-    private lateinit var pairAddress: EditText
     private lateinit var pairCode: EditText
-    private lateinit var connectPort: EditText
+    private lateinit var startShizuku: CheckBox
+    private lateinit var networkStatus: TextView
 
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -34,31 +35,41 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         controller = AdbController(this)
         output = findViewById(R.id.output)
-        pairAddress = findViewById(R.id.pairAddress)
         pairCode = findViewById(R.id.pairCode)
-        connectPort = findViewById(R.id.connectPort)
-        findViewById<TextView>(R.id.networkStatus).text = NetworkClassifier.describe(this)
+        startShizuku = findViewById(R.id.startShizuku)
+        networkStatus = findViewById(R.id.networkStatus)
 
-        val prefs = getSharedPreferences("adb_tcp", MODE_PRIVATE)
-        pairAddress.setText(prefs.getString("pair_address", ""))
-        connectPort.setText(prefs.getString("connect_port", ""))
+        val prefs = getSharedPreferences(PairingService.PREFS, MODE_PRIVATE)
+        startShizuku.isChecked = prefs.getBoolean(PairingService.PREF_START_SHIZUKU, true)
+        startShizuku.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean(PairingService.PREF_START_SHIZUKU, checked).apply()
+        }
 
-        findViewById<Button>(R.id.openSettings).setOnClickListener { openWirelessSettings() }
-        findViewById<Button>(R.id.pairEnable).setOnClickListener {
-            val address = pairAddress.text.toString()
-            val code = pairCode.text.toString()
-            val port = connectPort.text.toString().toIntOrNull()
-            if (port == null) {
-                output.text = "Enter the new connection port shown on the main Wireless Debugging page."
-                return@setOnClickListener
-            }
-            prefs.edit().putString("pair_address", address).putString("connect_port", port.toString()).apply()
-            runTask("Pairing and switching to TCP 5555…") {
-                controller.pairAndEnable(address, code, port)
+        findViewById<Button>(R.id.autoPair).setOnClickListener {
+            prefs.edit()
+                .putBoolean(PairingService.PREF_START_SHIZUKU, startShizuku.isChecked)
+                .apply()
+            requestNotificationPermission()
+            PairingService.start(this)
+            output.text = "Automatic pairing started. In Wireless debugging, enable the toggle and tap “Pair device with pairing code”. The app will detect the address and ports itself."
+            openWirelessSettings()
+        }
+        findViewById<Button>(R.id.submitCode).setOnClickListener {
+            val code = pairCode.text.toString().filter(Char::isDigit)
+            if (code.length != 6) {
+                output.text = "Enter the six-digit pairing code."
+            } else {
+                PairingService.submitCode(this, code)
+                pairCode.text?.clear()
+                output.text = "Pairing code submitted. The app is discovering the normal ADB connection service."
             }
         }
+        findViewById<Button>(R.id.openSettings).setOnClickListener { openWirelessSettings() }
         findViewById<Button>(R.id.reconnect).setOnClickListener {
             runTask("Reconnecting…") { controller.reconnect() }
+        }
+        findViewById<Button>(R.id.startShizukuNow).setOnClickListener {
+            runTask("Starting Shizuku through loopback ADB…") { controller.startShizuku().toString() }
         }
         findViewById<Button>(R.id.safeOff).setOnClickListener {
             runTask("Disconnecting safely…") { controller.safeOff().toString() }
@@ -77,7 +88,14 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.overlay).setOnClickListener { enableOverlay() }
 
         requestNotificationPermission()
-        runTask("Checking local ADB listener…") { controller.reconnect() }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        networkStatus.text = NetworkClassifier.describe(this)
+        val last = getSharedPreferences(PairingService.PREFS, MODE_PRIVATE)
+            .getString(PairingService.PREF_LAST_RESULT, null)
+        if (!last.isNullOrBlank()) output.text = last
     }
 
     private fun runTask(initial: String, task: suspend () -> String) {
@@ -105,7 +123,10 @@ class MainActivity : AppCompatActivity() {
             output.text = "Grant Display over other apps, return here, then press the overlay button again."
             return
         }
-        getSharedPreferences("adb_tcp", MODE_PRIVATE).edit().putBoolean("overlay_enabled", true).apply()
+        getSharedPreferences(PairingService.PREFS, MODE_PRIVATE)
+            .edit()
+            .putBoolean("overlay_enabled", true)
+            .apply()
         ContextCompat.startForegroundService(this, Intent(this, OverlayService::class.java))
         output.text = "Overlay started."
     }
