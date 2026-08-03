@@ -17,6 +17,19 @@ A standalone Android 15 utility that bootstraps classic ADB-over-TCP from Androi
 - **Safe Off:** disconnects the app but leaves TCP 5555 available so it can reconnect on mobile data.
 - **Full Off:** sends `adb usb`, which shuts down TCP. Re-enabling it then requires Wireless Debugging/USB or a successful OEM boot-persistence method.
 
+## Boot compatibility scan
+
+The app treats an actual socket and authenticated ADB shell on `127.0.0.1:5555` as the source of truth. Some Motorola Android 15 builds return blank values for `service.adb.tcp.port` even while classic TCP ADB is active.
+
+The scan checks:
+
+- whether loopback TCP 5555 is listening and authenticated;
+- whether `persist.adb.tcp.port` can be written;
+- whether property-based status is usable;
+- readable system, product, vendor, ODM, and system-ext init files for ADB/TCP boot triggers.
+
+On the tested Motorola build, writing `persist.adb.tcp.port` as shell is blocked by SELinux/property policy. Same-boot operation over mobile data remains supported; cold-boot recovery still requires a discovered OEM trigger, root, USB ADB, or temporary Wi-Fi pairing.
+
 ## Build
 
 The project uses Gradle 8.11.1, Android Gradle Plugin 8.9.3, Kotlin 2.1.0, compile/target SDK 35, and Java 17.
