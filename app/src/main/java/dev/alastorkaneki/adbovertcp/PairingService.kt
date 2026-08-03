@@ -120,17 +120,23 @@ class PairingService : Service() {
             )
             publishResult(result)
 
-            if (controller.isLoopbackListening(1_500)) {
+            // A raw socket probe is insufficient: the embedded adb server can restart and forget
+            // the transport. Require adb connect + get-state to succeed before reporting success.
+            val finalTransport = controller.ensureLoopbackConnected(attempts = 8, delayMs = 500)
+            if (finalTransport.ok) {
                 val message = if (startShizuku) {
-                    "TCP 5555 is active through loopback. Shizuku startup was attempted. Wi-Fi may now be disconnected."
+                    "TCP 5555 is active and authenticated through loopback. Shizuku startup was attempted. Wi-Fi may now be disconnected."
                 } else {
-                    "TCP 5555 is active through loopback. Wi-Fi may now be disconnected."
+                    "TCP 5555 is active and authenticated through loopback. Wi-Fi may now be disconnected."
                 }
+                publishResult("$result\n\n[FINAL TRANSPORT]\n$finalTransport")
                 updateNotification(message, codeInput = false, ongoing = false)
                 stopForeground(STOP_FOREGROUND_DETACH)
                 stopSelf()
             } else {
-                finishWithError("Pairing completed, but 127.0.0.1:5555 did not become reachable.\n\n$result")
+                finishWithError(
+                    "Pairing completed, but embedded ADB could not authenticate 127.0.0.1:5555.\n\n$finalTransport\n\n$result"
+                )
             }
         }
     }

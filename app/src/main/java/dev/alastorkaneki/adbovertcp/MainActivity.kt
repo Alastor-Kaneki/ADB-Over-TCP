@@ -33,6 +33,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        AdbHostService.start(this)
         controller = AdbController(this)
         output = findViewById(R.id.output)
         pairCode = findViewById(R.id.pairCode)
@@ -50,6 +51,7 @@ class MainActivity : AppCompatActivity() {
                 .putBoolean(PairingService.PREF_START_SHIZUKU, startShizuku.isChecked)
                 .apply()
             requestNotificationPermission()
+            AdbHostService.start(this)
             PairingService.start(this)
             output.text = "Automatic pairing started. In Wireless debugging, enable the toggle and tap “Pair device with pairing code”. The app will detect the address and ports itself."
             openWirelessSettings()
