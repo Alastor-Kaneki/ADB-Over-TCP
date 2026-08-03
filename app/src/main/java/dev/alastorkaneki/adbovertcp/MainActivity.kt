@@ -70,7 +70,9 @@ class MainActivity : AppCompatActivity() {
             runTask("Granting eligible permissions/app-ops…") { controller.grantAppPermissions() }
         }
         findViewById<Button>(R.id.bootScan).setOnClickListener {
-            runTask("Testing persistent ADB property…") { controller.testPersistentPort() }
+            runTask("Scanning boot compatibility and readable OEM init rules…") {
+                controller.bootCompatibilityScan()
+            }
         }
         findViewById<Button>(R.id.overlay).setOnClickListener { enableOverlay() }
 
