@@ -5,6 +5,8 @@ import kotlinx.coroutines.delay
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.security.MessageDigest
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 class AdbController(private val context: Context) {
@@ -53,7 +55,8 @@ class AdbController(private val context: Context) {
                 .apply {
                     environment()["HOME"] = adbHome.absolutePath
                     environment()["TMPDIR"] = context.cacheDir.absolutePath
-                    environment()["ADB_VENDOR_KEYS"] = File(adbHome, ".android/adbkey").absolutePath
+                    environment()["ADB_VENDOR_KEYS"] =
+                        File(adbHome, ".android/adbkey").absolutePath
                 }
                 .start()
             process.outputStream.close()
@@ -70,11 +73,6 @@ class AdbController(private val context: Context) {
         }.getOrElse { Result(126, it.stackTraceToString()) }
     }
 
-    /**
-     * The TCP listener can be alive while a newly started adb host server has forgotten the
-     * transport. Keep the host server alive, then re-register and verify the transport before
-     * every privileged action.
-     */
     fun ensureLoopbackConnected(
         attempts: Int = 6,
         delayMs: Long = 450
@@ -222,6 +220,126 @@ class AdbController(private val context: Context) {
         )
     }
 
+    fun wifiStatus(): Result = runLoopback(
+        "shell",
+        "sh",
+        "-c",
+        "cmd wifi status 2>/dev/null || dumpsys wifi | grep -m1 -E 'Wi-Fi is|Wifi is'"
+    )
+
+    fun setWifiEnabled(enabled: Boolean): String {
+        val before = wifiStatus()
+        if (!before.ok) {
+            return "Wi-Fi was not changed because loopback ADB is unavailable.\n\n$before"
+        }
+
+        val command = runLoopback(
+            "shell",
+            "svc",
+            "wifi",
+            if (enabled) "enable" else "disable"
+        )
+        Thread.sleep(1_200)
+        val after = wifiStatus()
+        return buildString {
+            appendLine("Requested Wi-Fi ${if (enabled) "ON" else "OFF"}.")
+            appendLine()
+            appendLine("BEFORE")
+            appendLine(before)
+            appendLine()
+            appendLine("COMMAND")
+            appendLine(command)
+            appendLine()
+            appendLine("AFTER")
+            append(after)
+        }.trim()
+    }
+
+    fun toggleWifi(): String {
+        val status = wifiStatus()
+        if (!status.ok) {
+            return "Wi-Fi was not changed because loopback ADB is unavailable.\n\n$status"
+        }
+        val normalized = status.output.lowercase()
+        val currentlyEnabled = normalized.contains("enabled") &&
+            !normalized.contains("disabled")
+        return setWifiEnabled(!currentlyEnabled)
+    }
+
+    /**
+     * Removes this app's ADB host key from Android's paired-device keystore.
+     * Android does not expose this as a public third-party API, so the shell identity calls the
+     * current IAdbManager transaction for unpairDevice. The operation is deliberately opt-in.
+     */
+    fun forgetOwnPairing(): Result {
+        val ready = ensureLoopbackConnected()
+        if (!ready.ok) return ready
+
+        val keyDir = File(adbHome, ".android")
+        val publicKeyFile = File(keyDir, "adbkey.pub")
+        if (!publicKeyFile.isFile) {
+            return Result(1, "The embedded ADB public key was not found at ${publicKeyFile.absolutePath}.")
+        }
+
+        val fingerprint = runCatching {
+            val encoded = publicKeyFile.readText().trim().substringBefore(' ')
+            val decoded = Base64.getDecoder().decode(encoded)
+            MessageDigest.getInstance("MD5")
+                .digest(decoded)
+                .joinToString(":") { byte -> "%02X".format(byte.toInt() and 0xFF) }
+        }.getOrElse {
+            return Result(1, "Could not calculate this app's ADB fingerprint.\n${it.stackTraceToString()}")
+        }
+
+        context.getSharedPreferences(PairingService.PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_LAST_OWN_FINGERPRINT, fingerprint)
+            .apply()
+
+        val call = run(
+            "-s",
+            LOOPBACK_SERIAL,
+            "shell",
+            "service",
+            "call",
+            "adb",
+            IADB_UNPAIR_TRANSACTION.toString(),
+            "s16",
+            fingerprint,
+            timeoutSeconds = 20
+        )
+        val binderFailure = call.output.contains("Exception", ignoreCase = true) ||
+            call.output.contains("Permission Denial", ignoreCase = true) ||
+            call.output.contains("Unknown transaction", ignoreCase = true)
+        val accepted = !binderFailure &&
+            (call.ok || call.output.contains("Parcel(00000000", ignoreCase = true))
+        if (!accepted) {
+            return Result(
+                1,
+                "Android did not accept the self-unpair request for $fingerprint.\n\n$call"
+            )
+        }
+
+        runCatching { run("kill-server", timeoutSeconds = 8) }
+        AdbHostService.stop(context)
+        val privateDeleted = File(keyDir, "adbkey").delete()
+        val publicDeleted = publicKeyFile.delete()
+
+        return Result(
+            0,
+            buildString {
+                appendLine("Requested removal of this app's paired ADB key.")
+                appendLine("Fingerprint: $fingerprint")
+                appendLine("Private key deleted: $privateDeleted")
+                appendLine("Public key deleted: $publicDeleted")
+                appendLine()
+                appendLine(call)
+                appendLine()
+                append("The app must create and pair a new key before loopback ADB can be used again.")
+            }
+        )
+    }
+
     fun reconnect(): String = buildString {
         appendLine("ADB host server: ${if (ensureHostServer()) "running" else "failed"}")
         appendLine("Socket listening: ${isLoopbackListening()}")
@@ -365,5 +483,7 @@ class AdbController(private val context: Context) {
     companion object {
         private const val LOOPBACK_SERIAL = "127.0.0.1:5555"
         private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
+        private const val IADB_UNPAIR_TRANSACTION = 7
+        private const val PREF_LAST_OWN_FINGERPRINT = "last_own_adb_fingerprint"
     }
 }
