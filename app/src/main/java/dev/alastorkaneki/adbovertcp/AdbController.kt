@@ -54,6 +54,52 @@ class AdbController(private val context: Context) {
         }.getOrElse { Result(126, it.stackTraceToString()) }
     }
 
+    /**
+     * The embedded adb server is not guaranteed to survive after the foreground pairing service
+     * stops. The TCP listener can still be alive while a newly started adb server has forgotten
+     * the transport. Re-register and verify the transport before every privileged action.
+     */
+    fun ensureLoopbackConnected(
+        attempts: Int = 6,
+        delayMs: Long = 450
+    ): Result {
+        if (!isLoopbackListening(1_200)) {
+            return Result(
+                1,
+                "The loopback TCP socket $LOOPBACK_SERIAL is closed. Run Automatic Pairing first."
+            )
+        }
+
+        val log = StringBuilder()
+        repeat(attempts.coerceAtLeast(1)) { index ->
+            val connect = run("connect", LOOPBACK_SERIAL, timeoutSeconds = 12)
+            val state = run("-s", LOOPBACK_SERIAL, "get-state", timeoutSeconds = 10)
+            log.append("Attempt ${index + 1}\n")
+            log.append("CONNECT\n$connect\n")
+            log.append("STATE\n$state\n")
+
+            if (state.ok && state.output.trim().equals("device", ignoreCase = true)) {
+                return Result(0, "Loopback ADB transport is ready.\n$log".trim())
+            }
+
+            if (index + 1 < attempts) Thread.sleep(delayMs)
+        }
+
+        return Result(
+            1,
+            "The TCP socket is open, but embedded ADB could not register an authorized transport.\n$log".trim()
+        )
+    }
+
+    private fun runLoopback(
+        vararg args: String,
+        timeoutSeconds: Long = 35
+    ): Result {
+        val ready = ensureLoopbackConnected()
+        if (!ready.ok) return ready
+        return run("-s", LOOPBACK_SERIAL, *args, timeoutSeconds = timeoutSeconds)
+    }
+
     fun pair(pairingAddress: String, code: String): Result {
         require(code.matches(Regex("\\d{6}"))) { "Pairing code must contain six digits" }
         return run("pair", pairingAddress.trim(), code)
@@ -76,12 +122,24 @@ class AdbController(private val context: Context) {
             return log.toString()
         }
 
-        delay(2_000)
-        append(log, "LOOPBACK CONNECT", run("connect", "127.0.0.1:5555"))
-        val verify = run("-s", "127.0.0.1:5555", "shell", "id")
-        append(log, "LOOPBACK VERIFY", verify)
+        // adbd restarts asynchronously. Retry both the raw socket and adb transport instead of
+        // assuming that a fixed two-second delay is enough on every OEM build.
+        var ready = Result(1, "Loopback handoff not attempted")
+        repeat(15) { index ->
+            delay(if (index == 0) 1_200 else 650)
+            ready = ensureLoopbackConnected(attempts = 2, delayMs = 250)
+            if (ready.ok) return@repeat
+        }
+        append(log, "LOOPBACK TRANSPORT", ready)
+        if (!ready.ok) return log.toString().trim()
 
-        if (startShizuku && verify.ok) {
+        val verify = runLoopback("shell", "id", timeoutSeconds = 15)
+        append(log, "LOOPBACK VERIFY", verify)
+        if (!verify.ok || !verify.output.contains("uid=2000")) {
+            return log.toString().trim()
+        }
+
+        if (startShizuku) {
             append(log, "SHIZUKU", startShizuku())
         }
         return log.toString().trim()
@@ -101,17 +159,30 @@ class AdbController(private val context: Context) {
     }
 
     fun startShizuku(): Result {
-        val serial = "127.0.0.1:5555"
+        val ready = ensureLoopbackConnected()
+        if (!ready.ok) {
+            return Result(
+                1,
+                "Cannot start Shizuku because loopback ADB is unavailable.\n${ready.output}"
+            )
+        }
+
         val packageCheck = run(
-            "-s", serial, "shell", "pm", "path", SHIZUKU_PACKAGE
+            "-s", LOOPBACK_SERIAL, "shell", "pm", "path", SHIZUKU_PACKAGE
         )
-        if (!packageCheck.ok || !packageCheck.output.contains("package:")) {
-            return Result(1, "Shizuku is not installed or its package is unavailable.\n$packageCheck")
+        if (!packageCheck.ok) {
+            return Result(
+                packageCheck.exitCode,
+                "Could not query Shizuku through loopback ADB.\n$packageCheck"
+            )
+        }
+        if (!packageCheck.output.contains("package:")) {
+            return Result(1, "Shizuku is not installed ($SHIZUKU_PACKAGE).")
         }
 
         return run(
             "-s",
-            serial,
+            LOOPBACK_SERIAL,
             "shell",
             "sh",
             "/sdcard/Android/data/$SHIZUKU_PACKAGE/start.sh",
@@ -120,17 +191,23 @@ class AdbController(private val context: Context) {
     }
 
     fun reconnect(): String = buildString {
-        append("Socket listening: ${isLoopbackListening()}\n")
-        append(run("connect", "127.0.0.1:5555"))
-        append("\n\n")
+        appendLine("Socket listening: ${isLoopbackListening()}")
+        val ready = ensureLoopbackConnected()
+        appendLine(ready)
+        appendLine()
         append(run("devices", "-l"))
-    }
+    }.trim()
 
-    fun safeOff(): Result = run("disconnect", "127.0.0.1:5555")
+    fun safeOff(): Result = run("disconnect", LOOPBACK_SERIAL)
 
-    fun fullOff(): Result = run("-s", "127.0.0.1:5555", "usb")
+    fun fullOff(): Result = runLoopback("usb")
 
     fun grantAppPermissions(): String {
+        val ready = ensureLoopbackConnected()
+        if (!ready.ok) {
+            return "Permissions were not attempted because loopback ADB is unavailable.\n\n$ready"
+        }
+
         val pkg = context.packageName
         val commands = listOf(
             listOf("pm", "grant", pkg, "android.permission.WRITE_SECURE_SETTINGS"),
@@ -140,20 +217,26 @@ class AdbController(private val context: Context) {
             listOf("appops", "set", pkg, "RUN_ANY_IN_BACKGROUND", "allow")
         )
         return buildString {
+            appendLine("LOOPBACK READY")
+            appendLine(ready)
+            appendLine()
             commands.forEach { command ->
-                val result = run(
-                    "-s", "127.0.0.1:5555", "shell", *command.toTypedArray()
-                )
+                val result = runLoopback("shell", *command.toTypedArray())
                 append("$ ${command.joinToString(" ")}\n$result\n\n")
             }
         }.trim()
     }
 
     fun bootCompatibilityScan(): String {
-        val serial = "127.0.0.1:5555"
+        val ready = ensureLoopbackConnected()
+        if (!ready.ok) {
+            return "Boot scan requires an active loopback ADB transport.\n\n$ready"
+        }
+
+        val serial = LOOPBACK_SERIAL
         val socketListening = isLoopbackListening(1_500)
-        val connect = if (socketListening) run("connect", serial) else Result(1, "Port 5555 is closed")
-        val identity = if (socketListening) run("-s", serial, "shell", "id") else Result(1, "Unavailable")
+        val connect = ready
+        val identity = run("-s", serial, "shell", "id")
         val manufacturer = shellGetProp(serial, "ro.product.manufacturer")
         val fingerprint = shellGetProp(serial, "ro.build.fingerprint")
         val enforcing = run("-s", serial, "shell", "getenforce")
@@ -244,6 +327,7 @@ class AdbController(private val context: Context) {
         if (host.contains(':')) "[$host]:$port" else "$host:$port"
 
     companion object {
-        const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
+        private const val LOOPBACK_SERIAL = "127.0.0.1:5555"
+        private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
     }
 }
