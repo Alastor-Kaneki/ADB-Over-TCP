@@ -104,6 +104,19 @@ def anim64 = new StringBuilder()
 animArchive.bytes = Base64.decoder.decode(anim64.toString())
 unzipSafely(animArchive, pixelForgeRoot)
 
+// v0.5 generation hotfix: preserve Java newline escapes in labels and palette text.
+def animActivity = new File(pixelForgeRoot, 'app/src/main/java/dev/pixelforge/editor/MainActivity.java')
+def animText = animActivity.getText('UTF-8')
+animText = animText.replace('''l.name+"
+"+(l.opacity''', 'l.name+"\\n"+(l.opacity')
+animText = animText.replace('''(idx+1)+tag+"
+"+f.durationMs''', '(idx+1)+tag+"\\n"+f.durationMs')
+animText = animText.replace('''new StringBuilder("# PixelForge palette
+")''', 'new StringBuilder("# PixelForge palette\\n")')
+animText = animText.replace('''.append('
+');''', ".append('\\n');")
+animActivity.setText(animText, 'UTF-8')
+
 def pixelForgeApp = new File(pixelForgeRoot, 'app')
 def appGradle = new File(pixelForgeApp, 'build.gradle')
 if (!appGradle.isFile()) throw new GradleException('PixelForge app/build.gradle was not extracted')
