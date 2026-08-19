@@ -2,19 +2,12 @@ import java.util.Base64
 import java.util.zip.ZipInputStream
 
 pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
 }
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
+    repositories { google(); mavenCentral() }
 }
 
 def unzipSafely = { File zipFile, File destination ->
@@ -23,18 +16,11 @@ def unzipSafely = { File zipFile, File destination ->
         while ((entry = zip.nextEntry) != null) {
             def out = new File(destination, entry.name).canonicalFile
             def root = destination.canonicalFile
-            if (!(out.path == root.path || out.path.startsWith(root.path + File.separator))) {
-                throw new GradleException("Unsafe ZIP path: ${entry.name}")
-            }
-            if (entry.directory) {
-                out.mkdirs()
-            } else {
+            if (!(out.path == root.path || out.path.startsWith(root.path + File.separator))) throw new GradleException("Unsafe ZIP path: ${entry.name}")
+            if (entry.directory) out.mkdirs()
+            else {
                 out.parentFile.mkdirs()
-                out.withOutputStream { os ->
-                    byte[] buffer = new byte[8192]
-                    int n
-                    while ((n = zip.read(buffer)) > 0) os.write(buffer, 0, n)
-                }
+                out.withOutputStream { os -> byte[] buffer = new byte[8192]; int n; while ((n = zip.read(buffer)) > 0) os.write(buffer, 0, n) }
             }
             zip.closeEntry()
         }
@@ -42,96 +28,42 @@ def unzipSafely = { File zipFile, File destination ->
 }
 
 def workDir = file('.pixelforge/work')
-def archive = file('.pixelforge/pixelforge.zip')
+def baseArchive = file('.pixelforge/pixelforge.zip')
 if (workDir.exists()) workDir.deleteDir()
 workDir.mkdirs()
 
-def encoded = new StringBuilder()
+def base64 = new StringBuilder()
 (0..4).each { i ->
     def part = file(String.format('.pixelforge/source-%02d.b64', i))
     if (!part.isFile()) throw new GradleException("Missing PixelForge source chunk: ${part}")
-    encoded.append(part.getText('UTF-8').trim())
+    base64.append(part.getText('UTF-8').trim())
 }
-archive.bytes = Base64.decoder.decode(encoded.toString())
-unzipSafely(archive, workDir)
+baseArchive.bytes = Base64.decoder.decode(base64.toString())
+unzipSafely(baseArchive, workDir)
 
 def pixelForgeRoot = new File(workDir, 'PixelForge')
-def overlayArchive = file('.pixelforge/feature-overlay.zip')
-def overlayEncoded = new StringBuilder()
+def parityArchive = file('.pixelforge/feature-overlay.zip')
+def parity64 = new StringBuilder()
 (0..14).each { i ->
     def part = file(String.format('.pixelforge/o2-%02d.b64', i))
-    if (!part.isFile()) throw new GradleException("Missing PixelForge overlay chunk: ${part}")
-    overlayEncoded.append(part.getText('UTF-8').trim())
+    if (!part.isFile()) throw new GradleException("Missing feature parity chunk: ${part}")
+    parity64.append(part.getText('UTF-8').trim())
 }
-overlayArchive.bytes = Base64.decoder.decode(overlayEncoded.toString())
-unzipSafely(overlayArchive, pixelForgeRoot)
+parityArchive.bytes = Base64.decoder.decode(parity64.toString())
+unzipSafely(parityArchive, pixelForgeRoot)
 
-// v0.2.1 startup hardening: avoid direct WindowInsetsController startup calls and
-// never allow immersive-mode setup to terminate the editor process.
-def mainActivity = new File(pixelForgeRoot, 'app/src/main/java/dev/pixelforge/editor/MainActivity.java')
-def activityText = mainActivity.getText('UTF-8')
-activityText = activityText.replace('import android.os.Build;\n', '')
-        .replace('import android.view.WindowInsets;\n', '')
-        .replace('import android.view.WindowInsetsController;\n', '')
-activityText = activityText.replaceFirst(/(?s)    @Override protected void onCreate\(Bundle savedInstanceState\) \{.*?\n    \}\n\n    @Override public void onWindowFocusChanged/, '''    @Override protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        try {
-            for (int c : DEFAULT_PALETTE) palette.add(c);
-            getWindow().setStatusBarColor(Color.BLACK);
-            getWindow().setNavigationBarColor(Color.BLACK);
-            buildUi();
-            refreshUi();
-            getWindow().getDecorView().post(this::enterImmersive);
-        } catch (Throwable t) {
-            showStartupFailure(t);
-        }
-    }
-
-    @Override public void onWindowFocusChanged''')
-activityText = activityText.replaceFirst(/(?s)    private void enterImmersive\(\) \{.*?\n    \}\n\n    private void buildUi\(\)/, '''    private void enterImmersive() {
-        try {
-            getWindow().getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
-                    View.SYSTEM_UI_FLAG_FULLSCREEN |
-                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
-                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-        } catch (Throwable ignored) {
-            // Fullscreen is optional; never crash the editor over system bars.
-        }
-    }
-
-    private void showStartupFailure(Throwable t) {
-        TextView error = new TextView(this);
-        error.setTextColor(Color.WHITE);
-        error.setBackgroundColor(0xFF111318);
-        error.setTextSize(13f);
-        error.setPadding(dp(16), dp(16), dp(16), dp(16));
-        StringBuilder message = new StringBuilder("PixelForge startup error\\n\\n")
-                .append(t.getClass().getName()).append(": ").append(t.getMessage());
-        StackTraceElement[] trace = t.getStackTrace();
-        for (int i = 0; i < Math.min(trace.length, 12); i++) {
-            message.append("\\n  at ").append(trace[i]);
-        }
-        error.setText(message.toString());
-        setContentView(error);
-    }
-
-    private void buildUi()''')
-mainActivity.setText(activityText, 'UTF-8')
+// v0.3 is a direct binary Git blob, avoiding text/base64 transfer corruption.
+def forgeOverlay = file('.pixelforge/v0.3-overlay.zip')
+if (!forgeOverlay.isFile()) throw new GradleException('Missing PixelForge v0.3 overlay')
+unzipSafely(forgeOverlay, pixelForgeRoot)
 
 def pixelForgeApp = new File(pixelForgeRoot, 'app')
 def appGradle = new File(pixelForgeApp, 'build.gradle')
-if (!appGradle.isFile()) throw new GradleException("PixelForge app/build.gradle was not extracted")
-def appGradleText = appGradle.getText('UTF-8').replace('versionCode 2', 'versionCode 3').replace("versionName '0.2.0'", "versionName '0.2.1'")
-appGradle.setText(appGradleText, 'UTF-8')
+if (!appGradle.isFile()) throw new GradleException('PixelForge app/build.gradle was not extracted')
 
 appGradle << '''
 
-// CI-only signing/staging. Reuse the repository's existing development identity
-// without duplicating its credentials in this temporary PixelForge build shim.
+// CI-only signing/staging. Reuse the repository's existing development identity.
 def pfSigningSource = rootProject.file('app/signing/adb-over-tcp-dev.jks.b64')
 def pfSigningDir = rootProject.file('.gradle/pixelforge-signing')
 def pfKeystore = new File(pfSigningDir, 'pixelforge-ci.jks')
@@ -141,13 +73,10 @@ def aliasMatch = (repoBuildText =~ /def stableSigningAlias = '([^']+)'/)
 if (!passwordMatch.find() || !aliasMatch.find()) throw new GradleException('Unable to read repository development signing configuration')
 def pfPassword = passwordMatch.group(1)
 def pfAlias = aliasMatch.group(1)
-
 if (!pfSigningSource.isFile()) throw new GradleException("CI signing source missing: ${pfSigningSource}")
 pfSigningDir.mkdirs()
 def pfBytes = java.util.Base64.getDecoder().decode(pfSigningSource.text.trim())
-if (!pfKeystore.isFile() || !java.util.Arrays.equals(pfKeystore.bytes, pfBytes)) {
-    pfKeystore.bytes = pfBytes
-}
+if (!pfKeystore.isFile() || !java.util.Arrays.equals(pfKeystore.bytes, pfBytes)) pfKeystore.bytes = pfBytes
 
 android {
     signingConfigs {
@@ -166,20 +95,11 @@ android {
         debug { signingConfig signingConfigs.stableDevelopment }
         release { signingConfig signingConfigs.stableDevelopment }
     }
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
 }
 
-tasks.register('stageDebugApk', Copy) {
-    from "$buildDir/outputs/apk/debug/app-debug.apk"
-    into rootProject.file('app/build/outputs/apk/debug')
-}
-tasks.register('stageReleaseApk', Copy) {
-    from "$buildDir/outputs/apk/release/app-release.apk"
-    into rootProject.file('app/build/outputs/apk/release')
-}
+tasks.register('stageDebugApk', Copy) { from "$buildDir/outputs/apk/debug/app-debug.apk"; into rootProject.file('app/build/outputs/apk/debug') }
+tasks.register('stageReleaseApk', Copy) { from "$buildDir/outputs/apk/release/app-release.apk"; into rootProject.file('app/build/outputs/apk/release') }
 tasks.configureEach { task ->
     if (task.name == 'assembleDebug') task.finalizedBy 'stageDebugApk'
     else if (task.name == 'assembleRelease') task.finalizedBy 'stageReleaseApk'
