@@ -106,8 +106,13 @@ tasks.register('stageReleaseApk', Copy) {
     from "$buildDir/outputs/apk/release/app-release.apk"
     into rootProject.file('app/build/outputs/apk/release')
 }
-tasks.named('assembleDebug').configure { finalizedBy tasks.named('stageDebugApk') }
-tasks.named('assembleRelease').configure { finalizedBy tasks.named('stageReleaseApk') }
+tasks.configureEach { task ->
+    if (task.name == 'assembleDebug') {
+        task.finalizedBy 'stageDebugApk'
+    } else if (task.name == 'assembleRelease') {
+        task.finalizedBy 'stageReleaseApk'
+    }
+}
 '''
 
 rootProject.name = 'PixelForge CI Build'
