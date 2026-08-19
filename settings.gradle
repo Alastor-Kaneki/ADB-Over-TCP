@@ -52,10 +52,15 @@ def parity64 = new StringBuilder()
 parityArchive.bytes = Base64.decoder.decode(parity64.toString())
 unzipSafely(parityArchive, pixelForgeRoot)
 
-// v0.3 is a direct binary Git blob, avoiding text/base64 transfer corruption.
-def forgeOverlay = file('.pixelforge/v0.3-overlay.zip')
-if (!forgeOverlay.isFile()) throw new GradleException('Missing PixelForge v0.3 overlay')
-unzipSafely(forgeOverlay, pixelForgeRoot)
+def forgeArchive = file('.pixelforge/v0.3-overlay-rebuilt.zip')
+def forge64 = new StringBuilder()
+(0..17).each { i ->
+    def part = file(String.format('.pixelforge/o3-%02d.b64', i))
+    if (!part.isFile()) throw new GradleException("Missing PixelForge v0.3 chunk: ${part}")
+    forge64.append(part.getText('UTF-8').trim())
+}
+forgeArchive.bytes = Base64.decoder.decode(forge64.toString())
+unzipSafely(forgeArchive, pixelForgeRoot)
 
 def pixelForgeApp = new File(pixelForgeRoot, 'app')
 def appGradle = new File(pixelForgeApp, 'build.gradle')
