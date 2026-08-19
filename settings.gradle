@@ -117,6 +117,17 @@ animText = animText.replace('''.append('
 ');''', ".append('\\n');")
 animActivity.setText(animText, 'UTF-8')
 
+// v0.6.0: My Gallery project hub + local project library.
+def galleryArchive = file('.pixelforge/v0.6-overlay.zip')
+def gallery64 = new StringBuilder()
+(0..4).each { i ->
+    def part = file(String.format('.pixelforge/o6-%02d.b64', i))
+    if (!part.isFile()) throw new GradleException("Missing PixelForge v0.6 chunk: ${part}")
+    gallery64.append(part.getText('UTF-8').replaceAll('\\s+', ''))
+}
+galleryArchive.bytes = Base64.decoder.decode(gallery64.toString())
+unzipSafely(galleryArchive, pixelForgeRoot)
+
 def pixelForgeApp = new File(pixelForgeRoot, 'app')
 def appGradle = new File(pixelForgeApp, 'build.gradle')
 if (!appGradle.isFile()) throw new GradleException('PixelForge app/build.gradle was not extracted')
