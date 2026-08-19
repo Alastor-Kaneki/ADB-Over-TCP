@@ -93,6 +93,17 @@ uiText = uiText.replace('''topInfo.setText("Untitled
 "+p.width''', 'topInfo.setText("Untitled\\n"+p.width')
 uiActivity.setText(uiText, 'UTF-8')
 
+// v0.5.0: native animated GIF export + animation workflow tools.
+def animArchive = file('.pixelforge/v0.5-overlay.zip')
+def anim64 = new StringBuilder()
+(0..19).each { i ->
+    def part = file(String.format('.pixelforge/o5-%02d.b64', i))
+    if (!part.isFile()) throw new GradleException("Missing PixelForge v0.5 chunk: ${part}")
+    anim64.append(part.getText('UTF-8').replaceAll('\\s+', ''))
+}
+animArchive.bytes = Base64.decoder.decode(anim64.toString())
+unzipSafely(animArchive, pixelForgeRoot)
+
 def pixelForgeApp = new File(pixelForgeRoot, 'app')
 def appGradle = new File(pixelForgeApp, 'build.gradle')
 if (!appGradle.isFile()) throw new GradleException('PixelForge app/build.gradle was not extracted')
