@@ -1,4 +1,4 @@
-name: Bootstrap PixelForge Toolchain
+name: Bootstrap PixelForge Gradle Cache
 
 on:
   pull_request:
@@ -8,57 +8,67 @@ permissions:
   contents: read
 
 jobs:
-  toolchain:
+  cache:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+          cache-disabled: true
 
-      - name: Package Android SDK 35
+      - name: Prime AGP 8.7.3 dependencies
         shell: bash
         run: |
           set -euo pipefail
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          BUILD_TOOLS_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -name '35*' | sort -V | tail -1)"
-          if [[ -z "$BUILD_TOOLS_DIR" ]]; then
-            echo "Android build-tools 35.x not found" >&2
-            exit 1
-          fi
-          mkdir -p toolchain/android-sdk/{cmdline-tools,build-tools,platforms}
-          cp -a "$ANDROID_HOME/cmdline-tools/latest" toolchain/android-sdk/cmdline-tools/
-          cp -a "$BUILD_TOOLS_DIR" toolchain/android-sdk/build-tools/
-          cp -a "$ANDROID_HOME/platforms/android-35" toolchain/android-sdk/platforms/
-          cp -a "$ANDROID_HOME/platform-tools" toolchain/android-sdk/
-          if [[ -d "$ANDROID_HOME/licenses" ]]; then cp -a "$ANDROID_HOME/licenses" toolchain/android-sdk/; fi
-          tar -C toolchain -czf android-sdk-35-linux-x86_64.tar.gz android-sdk
-          du -h android-sdk-35-linux-x86_64.tar.gz
+          rm -rf /tmp/pf-cache-prime
+          mkdir -p /tmp/pf-cache-prime/app/src/main/java/dev/pixelforge/cache
+          cat > /tmp/pf-cache-prime/settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'PixelForgeCachePrime'
+          include ':app'
+          EOF
+          cat > /tmp/pf-cache-prime/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+          cat > /tmp/pf-cache-prime/app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'dev.pixelforge.cache'
+              compileSdk 35
+              defaultConfig { applicationId 'dev.pixelforge.cache'; minSdk 26; targetSdk 35; versionCode 1; versionName '1' }
+          }
+          EOF
+          cat > /tmp/pf-cache-prime/app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:theme="@android:style/Theme.Material.Light.NoActionBar"><activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity></application></manifest>
+          EOF
+          cat > /tmp/pf-cache-prime/app/src/main/java/dev/pixelforge/cache/MainActivity.java <<'EOF'
+          package dev.pixelforge.cache; public class MainActivity extends android.app.Activity {}
+          EOF
+          cd /tmp/pf-cache-prime
+          gradle --no-daemon :app:assembleDebug --stacktrace
 
-      - name: Package Gradle 8.11.1
+      - name: Package Gradle dependency cache
         shell: bash
         run: |
           set -euo pipefail
-          GRADLE_BIN="$(readlink -f "$(command -v gradle)")"
-          GRADLE_ROOT="$(dirname "$(dirname "$GRADLE_BIN")")"
-          echo "Gradle root: $GRADLE_ROOT"
-          tar -C "$(dirname "$GRADLE_ROOT")" -czf gradle-8.11.1-linux-x86_64.tar.gz "$(basename "$GRADLE_ROOT")"
-          du -h gradle-8.11.1-linux-x86_64.tar.gz
+          mkdir -p /tmp/pf-gradle-cache/caches
+          cp -a "$HOME/.gradle/caches/modules-2" /tmp/pf-gradle-cache/caches/
+          if [[ -d "$HOME/.gradle/caches/8.11.1" ]]; then cp -a "$HOME/.gradle/caches/8.11.1" /tmp/pf-gradle-cache/caches/; fi
+          if [[ -d "$HOME/.gradle/caches/jars-9" ]]; then cp -a "$HOME/.gradle/caches/jars-9" /tmp/pf-gradle-cache/caches/; fi
+          if [[ -d "$HOME/.gradle/caches/transforms-4" ]]; then cp -a "$HOME/.gradle/caches/transforms-4" /tmp/pf-gradle-cache/caches/; fi
+          tar -C /tmp/pf-gradle-cache -czf pixelforge-gradle-cache-agp-8.7.3.tar.gz caches
+          du -h pixelforge-gradle-cache-agp-8.7.3.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pixelforge-android-sdk-35-linux
-          path: android-sdk-35-linux-x86_64.tar.gz
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pixelforge-gradle-8.11.1-linux
-          path: gradle-8.11.1-linux-x86_64.tar.gz
+          name: pixelforge-gradle-cache-agp-8.7.3
+          path: pixelforge-gradle-cache-agp-8.7.3.tar.gz
           if-no-files-found: error
