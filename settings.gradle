@@ -70,7 +70,6 @@ editorText = editorText.replace('Math.min(32, size)', 'Math.min(64, size)')
 editorView.setText(editorText, 'UTF-8')
 
 // v0.4.0: Pixilart-style canvas-first drawer UI + direct HEX/ARGB color entry.
-// Some transfer chunks are line-wrapped; remove whitespace before Base64 decoding.
 def uiArchive = file('.pixelforge/v0.4-overlay.zip')
 def ui64 = new StringBuilder()
 (0..5).each { i ->
@@ -80,6 +79,19 @@ def ui64 = new StringBuilder()
 }
 uiArchive.bytes = Base64.decoder.decode(ui64.toString())
 unzipSafely(uiArchive, pixelForgeRoot)
+
+// v0.4 generation hotfix: intended line-breaks must remain escaped inside Java strings.
+def uiActivity = new File(pixelForgeRoot, 'app/src/main/java/dev/pixelforge/editor/MainActivity.java')
+def uiText = uiActivity.getText('UTF-8')
+uiText = uiText.replace('''overlayText("Untitled
+32×32")''', 'overlayText("Untitled\\n32×32")')
+uiText = uiText.replace('''l.name+"
+"+(l.opacity''', 'l.name+"\\n"+(l.opacity')
+uiText = uiText.replace('''(idx+1)+"
+"+f.durationMs''', '(idx+1)+"\\n"+f.durationMs')
+uiText = uiText.replace('''topInfo.setText("Untitled
+"+p.width''', 'topInfo.setText("Untitled\\n"+p.width')
+uiActivity.setText(uiText, 'UTF-8')
 
 def pixelForgeApp = new File(pixelForgeRoot, 'app')
 def appGradle = new File(pixelForgeApp, 'build.gradle')
