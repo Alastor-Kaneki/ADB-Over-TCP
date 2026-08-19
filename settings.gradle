@@ -62,6 +62,13 @@ def forge64 = new StringBuilder()
 forgeArchive.bytes = Base64.decoder.decode(forge64.toString())
 unzipSafely(forgeArchive, pixelForgeRoot)
 
+// v0.3.0 compile hotfixes discovered by the real Android javac pass.
+def editorView = new File(pixelForgeRoot, 'app/src/main/java/dev/pixelforge/editor/PixelEditorView.java')
+def editorText = editorView.getText('UTF-8')
+editorText = editorText.replace('int threshold=((x&1)+((y&1)<<1))*0.25;', 'double threshold=((x&1)+((y&1)<<1))*0.25;')
+editorText = editorText.replace('Math.min(32, size)', 'Math.min(64, size)')
+editorView.setText(editorText, 'UTF-8')
+
 def pixelForgeApp = new File(pixelForgeRoot, 'app')
 def appGradle = new File(pixelForgeApp, 'build.gradle')
 if (!appGradle.isFile()) throw new GradleException('PixelForge app/build.gradle was not extracted')
