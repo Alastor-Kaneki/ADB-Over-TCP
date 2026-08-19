@@ -1,19 +1,14 @@
-name: Build Android APK
+name: Bootstrap PixelForge Toolchain
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  EXPECTED_SIGNING_SHA256: 8B:F2:5A:D7:4C:47:54:72:17:A2:F3:61:4B:E4:F6:60:B6:00:4A:38:28:28:47:01:A5:21:D3:95:27:F2:A0:18
-
 jobs:
-  build:
+  toolchain:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,27 +22,43 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Build stable-signed APKs
-        run: gradle :app:assembleDebug :app:assembleRelease --stacktrace
-
-      - name: Verify permanent signing certificate
+      - name: Package Android SDK 35
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p signing-reports
-          for apk in \
-            app/build/outputs/apk/debug/app-debug.apk \
-            app/build/outputs/apk/release/app-release.apk; do
-            report="signing-reports/$(basename "$apk").txt"
-            keytool -printcert -jarfile "$apk" | tee "$report"
-            grep -F "SHA256: $EXPECTED_SIGNING_SHA256" "$report"
-          done
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          BUILD_TOOLS_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -name '35*' | sort -V | tail -1)"
+          if [[ -z "$BUILD_TOOLS_DIR" ]]; then
+            echo "Android build-tools 35.x not found" >&2
+            exit 1
+          fi
+          mkdir -p toolchain/android-sdk/{cmdline-tools,build-tools,platforms}
+          cp -a "$ANDROID_HOME/cmdline-tools/latest" toolchain/android-sdk/cmdline-tools/
+          cp -a "$BUILD_TOOLS_DIR" toolchain/android-sdk/build-tools/
+          cp -a "$ANDROID_HOME/platforms/android-35" toolchain/android-sdk/platforms/
+          cp -a "$ANDROID_HOME/platform-tools" toolchain/android-sdk/
+          if [[ -d "$ANDROID_HOME/licenses" ]]; then cp -a "$ANDROID_HOME/licenses" toolchain/android-sdk/; fi
+          tar -C toolchain -czf android-sdk-35-linux-x86_64.tar.gz android-sdk
+          du -h android-sdk-35-linux-x86_64.tar.gz
+
+      - name: Package Gradle 8.11.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          GRADLE_BIN="$(readlink -f "$(command -v gradle)")"
+          GRADLE_ROOT="$(dirname "$(dirname "$GRADLE_BIN")")"
+          echo "Gradle root: $GRADLE_ROOT"
+          tar -C "$(dirname "$GRADLE_ROOT")" -czf gradle-8.11.1-linux-x86_64.tar.gz "$(basename "$GRADLE_ROOT")"
+          du -h gradle-8.11.1-linux-x86_64.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ADB-Over-TCP-stable-signed
-          path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/apk/release/app-release.apk
-            signing-reports/*.txt
+          name: pixelforge-android-sdk-35-linux
+          path: android-sdk-35-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pixelforge-gradle-8.11.1-linux
+          path: gradle-8.11.1-linux-x86_64.tar.gz
           if-no-files-found: error
