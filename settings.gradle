@@ -69,6 +69,18 @@ editorText = editorText.replace('int threshold=((x&1)+((y&1)<<1))*0.25;', 'doubl
 editorText = editorText.replace('Math.min(32, size)', 'Math.min(64, size)')
 editorView.setText(editorText, 'UTF-8')
 
+// v0.4.0: Pixilart-style canvas-first drawer UI + direct HEX/ARGB color entry.
+// Some transfer chunks are line-wrapped; remove whitespace before Base64 decoding.
+def uiArchive = file('.pixelforge/v0.4-overlay.zip')
+def ui64 = new StringBuilder()
+(0..5).each { i ->
+    def part = file(String.format('.pixelforge/o4-%02d.b64', i))
+    if (!part.isFile()) throw new GradleException("Missing PixelForge v0.4 chunk: ${part}")
+    ui64.append(part.getText('UTF-8').replaceAll('\\s+', ''))
+}
+uiArchive.bytes = Base64.decoder.decode(ui64.toString())
+unzipSafely(uiArchive, pixelForgeRoot)
+
 def pixelForgeApp = new File(pixelForgeRoot, 'app')
 def appGradle = new File(pixelForgeApp, 'build.gradle')
 if (!appGradle.isFile()) throw new GradleException('PixelForge app/build.gradle was not extracted')
